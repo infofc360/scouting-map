@@ -146,11 +146,21 @@ Mappings in parent directory: `scraper3.py` and `import_to_scouting.py`
 
 ## Deployment
 
-Git repo deployed to Vercel (auto-deploys on push):
+Git repo deployed to Vercel (auto-deploys on push to `main`):
 ```bash
-gh auth switch --user stephenchase7  # if needed
 git add . && git commit -m "message" && git push
 ```
+
+Everything lives under the `infofc360` account - repo, Vercel GitHub
+integration and commit identity. Do NOT run `gh auth switch`: `infofc360` is
+already the active `gh` account, and switching breaks any parallel session
+authed as it. If a command needs the other account, scope it to that one
+command with `GH_TOKEN=... gh ...` instead.
+
+Commits should be authored `infofc360 <info@fc360.co>`, which is the global
+git identity - this repo sets no local override, so nothing to do. Merge
+branches locally rather than through the GitHub web UI, which attributes the
+merge commit to whichever account the browser happens to be signed into.
 
 Live URLs:
 - https://scouting-map.vercel.app/index.html
