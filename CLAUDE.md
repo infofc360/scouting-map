@@ -162,9 +162,16 @@ git identity - this repo sets no local override, so nothing to do. Merge
 branches locally rather than through the GitHub web UI, which attributes the
 merge commit to whichever account the browser happens to be signed into.
 
-Live URLs:
-- https://scouting-map.vercel.app/index.html
-- https://scouting-map.vercel.app/team.html?club=CLUB_ID
+Live URLs (canonical — this is the production domain the `infofc360` project
+auto-deploys to):
+- https://scouting-map-seven.vercel.app/index.html
+- https://scouting-map-seven.vercel.app/team.html?club=CLUB_ID
+
+Do NOT use `scouting-map.vercel.app`. Vercel gave this project the `-seven`
+suffix because the bare `scouting-map.vercel.app` name is held by a different
+Vercel team (the personal `stephenchase7` account). That other copy is a stale
+build not wired to this repo, so pushes never update it — confirmed Sept 2026
+when the first 26/27 upload rendered on `-seven` but not on the bare name.
 
 ## Supabase Integration
 
