@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Static web application for MLS NEXT and ECNL youth soccer scouting. Displays club locations on an interactive map, team rosters with stats, scout watchlists, and AI-powered MLS rules search. No build process - all vanilla HTML/CSS/JS.
+Static web application for MLS NEXT and ECNL youth soccer scouting. Displays club locations on an interactive map, team rosters with stats, and scout watchlists. No build process - all vanilla HTML/CSS/JS.
 
 ## Key Files
 
@@ -14,8 +14,6 @@ Static web application for MLS NEXT and ECNL youth soccer scouting. Displays clu
 | `auth.js` | Shared Supabase config + Auth (sign-in modal, `window.sbClient`, `escapeHtml`) — single source of truth |
 | `team.html` | Team rosters by age group (U13-U19), player stats tables |
 | `scouts.html` | Scout database, player watchlists, scouting reports, player comparison |
-| `live.html` | Live scouting with pitch tracking, player cards, action counters |
-| `rules.html` | MLS NEXT rules viewer with AI Q&A (requires rules_server.py) |
 
 ## Running Locally
 
@@ -24,10 +22,6 @@ Static web application for MLS NEXT and ECNL youth soccer scouting. Displays clu
 cd scouting-map
 python3 -m http.server 8001
 # Open http://localhost:8001/index.html
-
-# Rules page with AI search - requires separate server
-python3 rules_server.py
-# Then open http://localhost:8080/rules.html
 ```
 
 ## Data Storage
@@ -58,7 +52,7 @@ Password (SHA-256 hashed, not stored in plaintext) unlocks:
 
 **Row Level Security (RLS):** Enabled on all Supabase tables (June 2026)
 - `clubs`, `squad_data` - Public read/write
-- `scout_players`, `scout_reports`, `live_sessions` - Public read/write
+- `scout_players`, `scout_reports` - Public read/write
 - Future: Restrict writes to authenticated users when Supabase Auth is added
 
 **XSS Prevention:**
@@ -116,26 +110,6 @@ Password (SHA-256 hashed, not stored in plaintext) unlocks:
 - Link to Roster modal (hidden, code preserved for future use)
 - Prefill from team.html Scout button (auto-creates player with linked_player_key)
 
-**live.html features:**
-- Drag-and-drop player markers onto soccer pitch
-- Player cards with:
-  - Player info (name, birth year, jersey, club, position, foot)
-  - 4 Pillars rating (Technical, Tactical, Physical, Mental - 5 stars each)
-  - With Ball actions: Goal, Assist, Personality, Problem Solving, 1v1 Dribble, Ball Carrying, Passing, Shot
-  - Against Ball actions: Tackle, Intercept, Block, Press, Recovery, Aerial
-  - Corner badge +/- buttons (green positive, red negative) for rating actions
-  - Quick tags (Top Prospect, Watch Closely, Academy Ready, etc.)
-  - Voice notes recording
-  - Notes textarea
-- Session management (save to Supabase `live_sessions` table)
-- Export to Scout DB button (copies players to scouts.html watchlist)
-- Undo functionality for actions
-
-**rules.html + rules_server.py:**
-- Loads 4 MLS NEXT documents as semantic HTML
-- AI search via Claude API (ANTHROPIC_API_KEY from ../.env)
-- Returns answers with page references
-
 ## Club ID System
 
 Two naming conventions must stay in sync:
@@ -177,7 +151,7 @@ when the first 26/27 upload rendered on `-seven` but not on the bare name.
 
 Data loads from Supabase first, falls back to embedded data:
 - Project: `pjorqdzlzgwqpivoibyx.supabase.co`
-- Tables: `clubs`, `squad_data`, `scout_players`, `scout_reports`, `live_sessions`, `player_match_stats`
+- Tables: `clubs`, `squad_data`, `scout_players`, `scout_reports`, `player_match_stats`
 - RLS enabled on all tables with public read/write policies
 - Add Club and Delete Club write directly to Supabase
 - Upload player data via `import_to_scouting.py --upload-db` (parent directory)
