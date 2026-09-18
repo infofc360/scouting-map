@@ -2286,14 +2286,13 @@ async function init() {
   document.title = 'Team Roster – ' + currentClub.name;
   renderPage();
 
-  // Restore unlocked state if the scout is already signed in (auth.js session)
-  if (window.Auth) {
-    Auth.isSignedIn().then(function(signedIn) {
-      if (signedIn) {
-        isAuthenticated = true;
-        updateAuthStatus();
-      }
-    });
+  // Restore unlocked state if the scout is already signed in (auth.js session).
+  // Auth.isSignedIn() returns a plain boolean - calling .then() on it threw a
+  // TypeError here that aborted init() before showTeam(), leaving the roster
+  // area empty for every club and season.
+  if (window.Auth && Auth.isSignedIn()) {
+    isAuthenticated = true;
+    updateAuthStatus();
   }
 
   // Show squad from hash, or first available squad as fallback
