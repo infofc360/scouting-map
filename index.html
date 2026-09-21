@@ -3070,7 +3070,7 @@ function buildList() {
     } else {
       logoHtml = '<div class="club-initials-sm" style="background:' + color + ';font-size:' + getFontSize(club.initials) + ';">' + escapeHtml(club.initials) + '</div>';
     }
-    var badge = club.isPro ? 'PRO' : 'HD';
+    var badge = club.isPro ? 'PRO' : (club.league || 'HD');
 
     // Format distance display (hide if 0 mi)
     var distanceText = (club.driveMiles > 0) ? ' &bull; ' + escapeHtml(club.driveMiles) + ' mi &bull; ' + escapeHtml(club.driveTime) : '';
