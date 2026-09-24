@@ -2335,6 +2335,18 @@ function getAvailableSquads() {
     return data && data.players && data.players.length > 0;
   });
 
+  // One tab per age group even if two keys differ only by case (e.g. a stray
+  // "u13" alongside "U13"). Keep whichever key has more players.
+  var byAge = {};
+  availableSquads.forEach(function(squad) {
+    var age = squad.toLowerCase();
+    if (!byAge[age] ||
+        (clubPlayers[squad].players.length > clubPlayers[byAge[age]].players.length)) {
+      byAge[age] = squad;
+    }
+  });
+  availableSquads = Object.keys(byAge).map(function(age) { return byAge[age]; });
+
   // Sort by age group order (U13, U14, U15, U16, U17, U19)
   var squadOrder = ['u13', 'u14', 'u15', 'u16', 'u17', 'u19'];
   availableSquads.sort(function(a, b) {
