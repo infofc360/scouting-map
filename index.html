@@ -1172,8 +1172,50 @@ body{letter-spacing:-.01em}
 .legend,.map-legend{border-radius:14px !important}
 </style>
 <script>
-// Initialize empty playersData - populated from Supabase
+// Initialize empty playersData - populated from Supabase.
+// playersData[clubId][squad] holds the NEWEST season only, which is what the
+// map markers and freshness badges want.
 var playersData = {};
+// Every season, kept apart: playersBySeason[clubId][squad][season]. The
+// entries are the SAME objects playersData points at, not copies.
+//
+// squad_data carries a row per (club, squad, season) and more than half of
+// those pairs now have both 25/26 and 26/27. Keying only on (club, squad)
+// let whichever row arrived last silently overwrite the other, so a search
+// returned a mix of seasons with no way to tell which was which.
+var playersBySeason = {};
+// Seasons actually present in the data, newest first. Drives the filter.
+var knownSeasons = [];
+// Seasons a shared ?season= link asked for, held until the filter menu has
+// been built from the data. See populateSeasonFilter.
+var pendingSeasonFromURL = null;
+
+// File one squad row into both views. The single place that decides which
+// season wins playersData, so the map can never disagree with the search
+// about which row it is showing.
+//
+// Seasons sort as strings on purpose: '2026-2027' > '2025-2026' holds for
+// every label squad_data uses, and nothing here has to parse a season.
+function recordSquad(clubId, squad, season, entry) {
+  if (!clubId || !squad) return;
+  season = season || 'Unknown';
+  entry.season = season;
+
+  if (!playersBySeason[clubId]) playersBySeason[clubId] = {};
+  if (!playersBySeason[clubId][squad]) playersBySeason[clubId][squad] = {};
+  playersBySeason[clubId][squad][season] = entry;
+
+  if (!playersData[clubId]) playersData[clubId] = {};
+  var current = playersData[clubId][squad];
+  if (!current || String(season) > String(current.season || '')) {
+    playersData[clubId][squad] = entry;
+  }
+
+  if (knownSeasons.indexOf(season) === -1) {
+    knownSeasons.push(season);
+    knownSeasons.sort().reverse();
+  }
+}
 </script>
 </head>
 <body>
@@ -1684,7 +1726,10 @@ try {
 
 // ── SUPABASE INTEGRATION ──
 // Supabase URL/key + client live in auth.js (window.sbClient) — single source of truth.
-var CACHE_KEY = 'supabase_clubs_cache';
+// v2: the cached squad rows now carry `season`. A v1 payload has none, so
+// every squad in it would file as season 'Unknown' and vanish from a
+// filtered search for up to CACHE_TTL. Renaming the key drops those.
+var CACHE_KEY = 'supabase_clubs_cache_v2';
 var CACHE_TTL = 60 * 60 * 1000; // 1 hour in milliseconds
 
 let supabaseClient = null;
@@ -1763,13 +1808,10 @@ function applyClubDataFromCache(cachedData) {
   // Apply cached squads
   if (cachedData.squads && cachedData.squads.length > 0) {
     cachedData.squads.forEach(function(squad) {
-      if (!playersData[squad.club_id]) {
-        playersData[squad.club_id] = {};
-      }
-      playersData[squad.club_id][squad.squad] = {
+      recordSquad(squad.club_id, squad.squad, squad.season, {
         lastUpdated: squad.last_scraped || '',
         players: squad.players || []
-      };
+      });
     });
   }
 }
@@ -1860,7 +1902,7 @@ async function loadSupabaseClubs() {
     // Also load squad data for data freshness indicators
     const { data: squads, error: squadsError } = await supabaseClient
       .from('squad_data')
-      .select('club_id, squad, last_scraped, players');
+      .select('club_id, squad, season, last_scraped, players');
 
     if (squadsError) {
       console.warn('[Supabase] Failed to load squad data:', squadsError);
@@ -1872,14 +1914,14 @@ async function loadSupabaseClubs() {
           return; // Skip invalid squads
         }
 
-        if (!playersData[squad.club_id]) {
-          playersData[squad.club_id] = {};
-        }
-        playersData[squad.club_id][squad.squad] = {
+        recordSquad(squad.club_id, squad.squad, squad.season, {
           lastUpdated: squad.last_scraped || '',
           players: squad.players || []
-        };
+        });
       });
+      // Guarded like refreshMap below: this runs from an async load that
+      // can resolve before the script block defining it has parsed.
+      if (typeof populateSeasonFilter === 'function') populateSeasonFilter();
     }
 
     // Update cache with fresh data
@@ -1934,12 +1976,17 @@ document.addEventListener('visibilitychange', async function() {
     if (error || !squadMeta) return;
     squadMeta.forEach(function(squad) {
       if (!squad.club_id || !squad.squad) return;
-      if (!playersData[squad.club_id]) playersData[squad.club_id] = {};
-      if (!playersData[squad.club_id][squad.squad]) {
-        playersData[squad.club_id][squad.squad] = { players: [] };
+      var season = squad.season || 'Unknown';
+      var stamp = squad.last_scraped || squad.updated_at || '';
+      // Onto that season's own entry, not whichever one is on top: a
+      // refresh must never stamp 26/27 with 25/26's scrape time.
+      var existing = (playersBySeason[squad.club_id] || {})[squad.squad];
+      if (existing && existing[season]) {
+        existing[season].lastUpdated = stamp;
+      } else {
+        recordSquad(squad.club_id, squad.squad, season,
+                    { lastUpdated: stamp, players: [] });
       }
-      playersData[squad.club_id][squad.squad].lastUpdated =
-        squad.last_scraped || squad.updated_at || '';
     });
     if (typeof refreshMap === 'function') refreshMap();
   } catch (e) {
@@ -3338,6 +3385,52 @@ function toggleDropdown(menuId) {
   menu.style.display = isVisible ? 'none' : 'block';
 }
 
+// '2026-2027' -> '26/27', the way the seasons are actually spoken about.
+// Anything not in that shape is shown as-is rather than mangled.
+function seasonLabel(season) {
+  var m = /^(\d{4})-(\d{4})$/.exec(season || '');
+  return m ? m[1].slice(2) + '/' + m[2].slice(2) : (season || 'Unknown');
+}
+
+// Build the Season checkboxes from the seasons the data actually has, newest
+// first, with the newest ticked. Defaulting to the current season is the
+// point of the filter: a scout asking "who is scoring this year" should not
+// have to know last year's rows are in there too.
+function populateSeasonFilter() {
+  var menu = document.getElementById('filter-season');
+  if (!menu || !knownSeasons.length) return;
+
+  // Keep whatever the user has already ticked across a refresh; only fall
+  // back to "newest" the first time the list is built.
+  var checked = Array.from(menu.querySelectorAll('input:checked')).map(function(cb) { return cb.value; });
+  if (!checked.length && !menu.dataset.initialised) checked = [knownSeasons[0]];
+
+  // A shared ?season= link is read before this menu has any checkboxes in
+  // it to tick - the seasons are not known until squad_data lands - so the
+  // link parks its choice here and it is applied the moment they exist.
+  if (pendingSeasonFromURL) {
+    checked = pendingSeasonFromURL;
+    pendingSeasonFromURL = null;
+  }
+
+  menu.innerHTML = knownSeasons.map(function(season) {
+    var on = checked.indexOf(season) !== -1 ? ' checked' : '';
+    return '<label><input type="checkbox" value="' + escapeAttr(season) + '"' + on +
+           ' onchange="updateDropdownLabel(\'filter-season\')"> ' +
+           escapeHtml(seasonLabel(season)) + '</label>';
+  }).join('');
+  menu.dataset.initialised = '1';
+  updateDropdownLabel('filter-season');
+
+  // A search that already ran counted seasons this menu had not offered yet
+  // - squad_data can land after the shared-link search fires. Re-run it so
+  // what is on screen matches what is now ticked.
+  var results = document.getElementById('search-results-container');
+  if (results && results.style.display !== 'none' && typeof performSearch === 'function') {
+    performSearch();
+  }
+}
+
 function updateDropdownLabel(menuId) {
   var menu = document.getElementById(menuId);
   var button = menu.previousElementSibling;
@@ -3375,10 +3468,18 @@ function clearSearchFilters() {
   document.getElementById('filter-min-ratio').value = '';
   document.getElementById('filter-playing-up').checked = false;
 
+  // Season goes back to the current one rather than to nothing. Clear means
+  // "start again", and starting again on every season at once is how the
+  // 25/26 rows turned up in a 26/27 search in the first place.
+  document.querySelectorAll('#filter-season input[type="checkbox"]').forEach(function(cb) {
+    cb.checked = knownSeasons.length > 0 && cb.value === knownSeasons[0];
+  });
+
   // Reset dropdown labels
   updateDropdownLabel('filter-age-group');
   updateDropdownLabel('filter-division');
   updateDropdownLabel('filter-position');
+  updateDropdownLabel('filter-season');
 
   // Hide results
   document.getElementById('search-results-container').style.display = 'none';
@@ -3433,6 +3534,7 @@ function performSearch() {
   var minRatio = parseFloat(document.getElementById('filter-min-ratio').value) || 0;
   var playingUpOnly = document.getElementById('filter-playing-up').checked;
   var playerNameFilter = (document.getElementById('filter-player-name').value || '').trim().toLowerCase();
+  var seasons = Array.from(document.querySelectorAll('#filter-season input:checked')).map(cb => cb.value);
 
   var results = [];
 
@@ -3448,7 +3550,9 @@ function performSearch() {
 
   // Iterate through all clubs
   clubs.forEach(function(club) {
-    var clubPlayers = playersData[club.clubId];
+    // Every season, not just the newest - the season filter decides which
+    // of them count, and with nothing ticked the search spans all of them.
+    var clubPlayers = playersBySeason[club.clubId];
     if (!clubPlayers) return;
 
     // Iterate through squads
@@ -3456,16 +3560,20 @@ function performSearch() {
       // Filter by age group (if any selected)
       if (ageGroups.length > 0 && !ageGroups.includes(squad)) return;
 
-      var squadData = clubPlayers[squad];
-      if (!squadData || !squadData.players) return;
-
       // Filter by division (if any selected)
       if (divisions.length > 0 && !divisions.includes(club.division)) return;
 
       var expectedYOB = squadYearMap[squad];
 
-      // Iterate through players
-      squadData.players.forEach(function(player) {
+      Object.keys(clubPlayers[squad]).forEach(function(season) {
+        // Filter by season (if any selected)
+        if (seasons.length > 0 && !seasons.includes(season)) return;
+
+        var squadData = clubPlayers[squad][season];
+        if (!squadData || !squadData.players) return;
+
+        // Iterate through players
+        squadData.players.forEach(function(player) {
         // Filter by player name (case-insensitive partial match)
         if (playerNameFilter && (!player.name || player.name.toLowerCase().indexOf(playerNameFilter) === -1)) return;
 
@@ -3509,6 +3617,7 @@ function performSearch() {
           club: club.name,
           clubId: club.clubId,
           squad: squad,
+          season: season,
           name: player.name,
           yob: player.yob || '-',
           position: player.position || '-',
@@ -3518,6 +3627,7 @@ function performSearch() {
           link: player.link || '',
           isPlayingUp: isPlayingUp
         });
+      });
       });
     });
   });
@@ -3543,7 +3653,7 @@ function displaySearchResults(results) {
   tbody.innerHTML = '';
 
   if (results.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:40px; color:#666;">' +
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:40px; color:#666;">' +
       '<div style="font-size:32px; margin-bottom:12px;">🔍</div>' +
       '<div style="font-weight:600; margin-bottom:8px;">No players found</div>' +
       '<div style="font-size:12px; color:#666;">Try adjusting your filters or search criteria</div>' +
@@ -3572,6 +3682,7 @@ function displaySearchResults(results) {
     row.innerHTML =
       '<td>' + escapeHtml(player.jersey) + '</td>' +
       '<td>' + escapeHtml(player.club) + '</td>' +
+      '<td style="white-space:nowrap; color:#666;">' + escapeHtml(seasonLabel(player.season)) + '</td>' +
       '<td>' + indicators + '<a href="team.html?club=' + encodeURIComponent(player.clubId) + '#' + encodeURIComponent(player.squad) + '-squad">' + escapeHtml(player.name) + '</a></td>' +
       '<td>' + escapeHtml(player.yob) + '</td>' +
       '<td>' + escapeHtml(player.position) + '</td>' +
@@ -3677,13 +3788,14 @@ function exportSearchResultsToCSV() {
 
   try {
     // CSV headers
-    var csv = '#,Club,Name,YOB,Position,Games,Goals,G/G,Link\n';
+    var csv = '#,Club,Season,Name,YOB,Position,Games,Goals,G/G,Link\n';
 
     // Add each row
     currentSearchResults.forEach(function(player) {
       var row = [
         player.jersey,
         '"' + (player.club || '').replace(/"/g, '""') + '"',
+        seasonLabel(player.season),
         '"' + (player.name || '').replace(/"/g, '""') + '"',
         player.yob === '-' ? '' : player.yob,
         player.position === '-' ? '' : player.position,
@@ -3732,6 +3844,7 @@ function shareSearchURL() {
   var minGoals = document.getElementById('filter-min-goals').value;
   var minRatio = document.getElementById('filter-min-ratio').value;
   var playingUp = document.getElementById('filter-playing-up').checked;
+  var seasons = Array.from(document.querySelectorAll('#filter-season input:checked')).map(cb => cb.value).join(',');
 
   // Add non-empty parameters
   if (ageGroups) params.set('age', ageGroups);
@@ -3740,6 +3853,10 @@ function shareSearchURL() {
   if (minGoals) params.set('goals', minGoals);
   if (minRatio) params.set('ratio', minRatio);
   if (playingUp) params.set('playup', '1');
+  // Always carried, even when it is just the current season: a link that
+  // silently means "whatever season you open this in" is a different search
+  // for whoever receives it.
+  if (seasons) params.set('season', seasons);
 
   // Check if any filters are set
   if (params.toString() === '') {
@@ -3820,11 +3937,25 @@ function loadSearchFromURL() {
   if (urlParams.has('playup')) {
     document.getElementById('filter-playing-up').checked = true;
   }
+  if (urlParams.has('season')) {
+    // Matched against the seasons the data actually has rather than
+    // whitelisted by shape, so a new season needs no change here and an
+    // unknown one simply ticks nothing.
+    var wanted = urlParams.get('season').split(',');
+    var seasonBoxes = document.querySelectorAll('#filter-season input[type="checkbox"]');
+    if (seasonBoxes.length) {
+      seasonBoxes.forEach(function(cb) { cb.checked = wanted.indexOf(cb.value) !== -1; });
+    } else {
+      // Menu not built yet - squad_data has not landed. Park it.
+      pendingSeasonFromURL = wanted;
+    }
+  }
 
   // Update dropdown labels
   updateDropdownLabel('filter-age-group');
   updateDropdownLabel('filter-division');
   updateDropdownLabel('filter-position');
+  updateDropdownLabel('filter-season');
 
   // Auto-open search modal and perform search
   setTimeout(function() {
@@ -4397,6 +4528,21 @@ loadSearchFromURL();
           </div>
         </div>
 
+        <div class="filter-row" style="margin-bottom:12px;">
+          <div class="filter-group" style="flex:1;">
+            <label>Season</label>
+            <div class="dropdown-checkbox-wrapper">
+              <button type="button" class="dropdown-checkbox-btn" onclick="toggleDropdown('filter-season')">
+                <span class="dropdown-label">All</span>
+                <span class="dropdown-arrow">▼</span>
+              </button>
+              <!-- Filled by populateSeasonFilter() from the seasons actually
+                   present in squad_data, newest checked by default. -->
+              <div class="dropdown-checkbox-menu" id="filter-season" style="display:none;"></div>
+            </div>
+          </div>
+        </div>
+
         <div class="filter-row">
           <div class="filter-group">
             <label>Age Group</label>
@@ -4493,6 +4639,7 @@ loadSearchFromURL();
               <tr>
                 <th class="sortable" onclick="sortSearchResults('jersey')"># <span class="sort-indicator"></span></th>
                 <th class="sortable" onclick="sortSearchResults('club')">Club <span class="sort-indicator"></span></th>
+                <th class="sortable" onclick="sortSearchResults('season')">Season <span class="sort-indicator"></span></th>
                 <th class="sortable" onclick="sortSearchResults('name')">Name <span class="sort-indicator"></span></th>
                 <th class="sortable" onclick="sortSearchResults('yob')">YOB <span class="sort-indicator"></span></th>
                 <th class="sortable" onclick="sortSearchResults('position')">Pos <span class="sort-indicator"></span></th>
