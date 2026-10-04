@@ -1186,9 +1186,30 @@ var playersData = {};
 var playersBySeason = {};
 // Seasons actually present in the data, newest first. Drives the filter.
 var knownSeasons = [];
-// Seasons a shared ?season= link asked for, held until the filter menu has
-// been built from the data. See populateSeasonFilter.
-var pendingSeasonFromURL = null;
+// What a shared search link asked for, keyed by filter menu id, held until
+// that menu has been built from the data. The menus are rebuilt from the
+// clubs and squads once they load, which would otherwise wipe anything the
+// link had already ticked. See applyPendingFilter.
+var pendingFromURL = {};
+
+// Tick `values` in a filter menu, or park them if it has no checkboxes yet.
+function applyPendingFilter(menuId, values) {
+  var boxes = document.querySelectorAll('#' + menuId + ' input[type="checkbox"]');
+  if (!boxes.length) { pendingFromURL[menuId] = values; return; }
+  boxes.forEach(function(cb) { cb.checked = values.indexOf(cb.value) !== -1; });
+  updateDropdownLabel(menuId);
+}
+
+// What should be ticked when a menu is (re)built: the link's choice if one
+// is waiting, otherwise whatever the user already had.
+function checkedFor(menuId, menu) {
+  if (pendingFromURL[menuId]) {
+    var wanted = pendingFromURL[menuId];
+    delete pendingFromURL[menuId];
+    return wanted;
+  }
+  return Array.from(menu.querySelectorAll('input:checked')).map(function(cb) { return cb.value; });
+}
 
 // File one squad row into both views. The single place that decides which
 // season wins playersData, so the map can never disagree with the search
@@ -1921,6 +1942,7 @@ async function loadSupabaseClubs() {
       });
       // Guarded like refreshMap below: this runs from an async load that
       // can resolve before the script block defining it has parsed.
+      if (typeof populateClubFilters === 'function') populateClubFilters();
       if (typeof populateSeasonFilter === 'function') populateSeasonFilter();
     }
 
@@ -3392,6 +3414,65 @@ function seasonLabel(season) {
   return m ? m[1].slice(2) + '/' + m[2].slice(2) : (season || 'Unknown');
 }
 
+// Build the Division and Age Group checkboxes from the clubs and squads that
+// actually exist, rather than from a hardcoded list that drifted away from
+// the data.
+//
+// The hardcoded Division list offered seven options, three of which
+// ('Tri-State', 'Southeast', 'Southwest') matched no club at all - the real
+// values are 'Southeast Division' and 'Southwest Division', and Tri-State
+// was never a division here - while Florida, Northwest, Frontier, North
+// Atlantic and the four Pro Player Pathway divisions could not be selected
+// at all. Reading the values off the clubs themselves cannot drift.
+function populateClubFilters() {
+  var menu = document.getElementById('filter-division');
+  if (menu && typeof clubs !== 'undefined' && clubs.length) {
+    var kept = checkedFor('filter-division', menu);
+    var divisions = [];
+    clubs.forEach(function(club) {
+      var d = club && club.division;
+      if (d && divisions.indexOf(d) === -1) divisions.push(d);
+    });
+    divisions.sort();
+    if (divisions.length) {
+      menu.innerHTML = divisions.map(function(division) {
+        var on = kept.indexOf(division) !== -1 ? ' checked' : '';
+        // The label drops a trailing 'Division' - the heading already says
+        // it - but the value stays the club's own text, which is what the
+        // search compares against.
+        var label = division.replace(/\s+Division$/, '');
+        return '<label><input type="checkbox" value="' + escapeAttr(division) + '"' + on +
+               ' onchange="updateDropdownLabel(\'filter-division\')"> ' +
+               escapeHtml(label) + '</label>';
+      }).join('');
+      updateDropdownLabel('filter-division');
+    }
+  }
+
+  // Age groups: the squads that actually carry data, so a board adding (or
+  // dropping) an age group needs no edit here.
+  var ageMenu = document.getElementById('filter-age-group');
+  if (ageMenu) {
+    var keptAges = checkedFor('filter-age-group', ageMenu);
+    var squads = [];
+    Object.keys(playersBySeason).forEach(function(clubId) {
+      Object.keys(playersBySeason[clubId]).forEach(function(squad) {
+        if (squads.indexOf(squad) === -1) squads.push(squad);
+      });
+    });
+    squads.sort();
+    if (squads.length) {
+      ageMenu.innerHTML = squads.map(function(squad) {
+        var on = keptAges.indexOf(squad) !== -1 ? ' checked' : '';
+        return '<label><input type="checkbox" value="' + escapeAttr(squad) + '"' + on +
+               ' onchange="updateDropdownLabel(\'filter-age-group\')"> ' +
+               escapeHtml(squad.toUpperCase()) + '</label>';
+      }).join('');
+      updateDropdownLabel('filter-age-group');
+    }
+  }
+}
+
 // Build the Season checkboxes from the seasons the data actually has, newest
 // first, with the newest ticked. Defaulting to the current season is the
 // point of the filter: a scout asking "who is scoring this year" should not
@@ -3400,18 +3481,10 @@ function populateSeasonFilter() {
   var menu = document.getElementById('filter-season');
   if (!menu || !knownSeasons.length) return;
 
-  // Keep whatever the user has already ticked across a refresh; only fall
-  // back to "newest" the first time the list is built.
-  var checked = Array.from(menu.querySelectorAll('input:checked')).map(function(cb) { return cb.value; });
+  // A shared link's choice if one is waiting, otherwise whatever is already
+  // ticked; only fall back to "newest" the first time the list is built.
+  var checked = checkedFor('filter-season', menu);
   if (!checked.length && !menu.dataset.initialised) checked = [knownSeasons[0]];
-
-  // A shared ?season= link is read before this menu has any checkboxes in
-  // it to tick - the seasons are not known until squad_data lands - so the
-  // link parks its choice here and it is applied the moment they exist.
-  if (pendingSeasonFromURL) {
-    checked = pendingSeasonFromURL;
-    pendingSeasonFromURL = null;
-  }
 
   menu.innerHTML = knownSeasons.map(function(season) {
     var on = checked.indexOf(season) !== -1 ? ' checked' : '';
@@ -3885,30 +3958,19 @@ function loadSearchFromURL() {
   }
 
   // Whitelist of valid filter values to prevent XSS via CSS selectors
-  var validAges = ['u13', 'u14', 'u15', 'u16', 'u17', 'u19'];
   var validPositions = ['GK', 'DEF', 'MID', 'FOR'];
 
   // Load filter values from URL with validation
+  // Age and division are matched against the checkboxes that exist rather
+  // than against a hardcoded whitelist - the menus are built from the clubs
+  // and squads themselves, so a new division needs no change here. Nothing
+  // from the URL reaches a CSS selector, which is what the old whitelist and
+  // its sanitising were guarding against.
   if (urlParams.has('age')) {
-    var ages = urlParams.get('age').split(',');
-    ages.forEach(function(age) {
-      // Only allow whitelisted age values
-      if (validAges.includes(age.toLowerCase())) {
-        var checkbox = document.querySelector('#filter-age-group input[value="' + age + '"]');
-        if (checkbox) checkbox.checked = true;
-      }
-    });
+    applyPendingFilter('filter-age-group', urlParams.get('age').split(','));
   }
   if (urlParams.has('div')) {
-    var divs = urlParams.get('div').split(',');
-    divs.forEach(function(div) {
-      // Sanitize division value - only allow alphanumeric, spaces, hyphens, parentheses
-      var sanitizedDiv = div.replace(/[^a-zA-Z0-9\s\-()]/g, '');
-      if (sanitizedDiv && sanitizedDiv === div) {
-        var checkbox = document.querySelector('#filter-division input[value="' + sanitizedDiv + '"]');
-        if (checkbox) checkbox.checked = true;
-      }
-    });
+    applyPendingFilter('filter-division', urlParams.get('div').split(','));
   }
   if (urlParams.has('pos')) {
     var poss = urlParams.get('pos').split(',');
@@ -3941,14 +4003,7 @@ function loadSearchFromURL() {
     // Matched against the seasons the data actually has rather than
     // whitelisted by shape, so a new season needs no change here and an
     // unknown one simply ticks nothing.
-    var wanted = urlParams.get('season').split(',');
-    var seasonBoxes = document.querySelectorAll('#filter-season input[type="checkbox"]');
-    if (seasonBoxes.length) {
-      seasonBoxes.forEach(function(cb) { cb.checked = wanted.indexOf(cb.value) !== -1; });
-    } else {
-      // Menu not built yet - squad_data has not landed. Park it.
-      pendingSeasonFromURL = wanted;
-    }
+    applyPendingFilter('filter-season', urlParams.get('season').split(','));
   }
 
   // Update dropdown labels
