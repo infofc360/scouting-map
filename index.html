@@ -745,6 +745,18 @@ body {
 .dropdown-checkbox-menu input[type="checkbox"] {
   margin-right:8px; cursor:pointer;
 }
+/* Type-to-narrow, for a list too long to scroll through: there are 140
+   clubs, three of them called Charlotte something. Sticky so it stays put
+   while the list below it scrolls. */
+.dropdown-search {
+  position:sticky; top:0; z-index:1; background:#fff;
+  padding:8px; border-bottom:1px solid #eee;
+}
+.dropdown-search input {
+  width:100%; padding:6px 10px; border:1px solid #ddd; border-radius:6px;
+  font-size:13px; box-sizing:border-box;
+}
+.dropdown-empty { padding:10px 12px; font-size:12px; color:#86868b; }
 .filter-group select, .filter-group input[type="number"] {
   width:100%; padding:8px 10px; border:1px solid #ddd; border-radius:6px;
   font-size:13px; transition:border-color 0.2s;
@@ -1943,6 +1955,7 @@ async function loadSupabaseClubs() {
       // Guarded like refreshMap below: this runs from an async load that
       // can resolve before the script block defining it has parsed.
       if (typeof populateClubFilters === 'function') populateClubFilters();
+      if (typeof populateClubPicker === 'function') populateClubPicker();
       if (typeof populateSeasonFilter === 'function') populateSeasonFilter();
     }
 
@@ -3473,6 +3486,62 @@ function populateClubFilters() {
   }
 }
 
+// The club picker: every club on the map, ticked one or several at a time.
+//
+// Named by club rather than typed as free text, and narrowed by typing
+// rather than scrolled: there are 140 clubs and three of them are a
+// Charlotte ("Charlotte FC", "Charlotte SA", "Charlotte Independence Soccer
+// Club"), so a scout has to SEE which one they are picking. The checkbox
+// carries the club id, which is what the search matches on; the label
+// carries the name, which is what a person reads.
+function populateClubPicker() {
+  var list = document.getElementById('filter-club-list');
+  if (!list || typeof clubs === 'undefined' || !clubs.length) return;
+
+  var kept = checkedFor('filter-club', list);
+  var seen = {};
+  var options = [];
+  clubs.forEach(function(club) {
+    if (!club || !club.clubId || seen[club.clubId]) return;
+    seen[club.clubId] = true;
+    options.push({ id: club.clubId, name: club.name || club.clubId });
+  });
+  options.sort(function(a, b) { return a.name.localeCompare(b.name); });
+
+  list.innerHTML = options.map(function(o) {
+    var on = kept.indexOf(o.id) !== -1 ? ' checked' : '';
+    return '<label data-name="' + escapeAttr(o.name.toLowerCase()) + '">' +
+           '<input type="checkbox" value="' + escapeAttr(o.id) + '"' + on +
+           ' onchange="updateDropdownLabel(\'filter-club\')"> ' +
+           escapeHtml(o.name) + '</label>';
+  }).join('');
+  updateDropdownLabel('filter-club');
+  // A list rebuilt while the box still holds a term must stay narrowed.
+  var box = document.getElementById('filter-club-search');
+  if (box && box.value) filterClubOptions(box.value);
+}
+
+/** Show only the clubs whose name contains `term`. Ticked clubs always stay
+ *  visible, so a selection cannot be hidden by a later search. */
+function filterClubOptions(term) {
+  var list = document.getElementById('filter-club-list');
+  if (!list) return;
+  var want = (term || '').trim().toLowerCase();
+  var shown = 0;
+  list.querySelectorAll('label').forEach(function(label) {
+    var box = label.querySelector('input');
+    var hit = !want || (label.dataset.name || '').indexOf(want) !== -1 || (box && box.checked);
+    label.style.display = hit ? '' : 'none';
+    if (hit) shown++;
+  });
+  var empty = list.querySelector('.dropdown-empty');
+  if (!shown && !empty) {
+    list.insertAdjacentHTML('beforeend', '<div class="dropdown-empty">No club matches that.</div>');
+  } else if (shown && empty) {
+    empty.remove();
+  }
+}
+
 // Build the Season checkboxes from the seasons the data actually has, newest
 // first, with the newest ticked. Defaulting to the current season is the
 // point of the filter: a scout asking "who is scoring this year" should not
@@ -3548,6 +3617,15 @@ function clearSearchFilters() {
     cb.checked = knownSeasons.length > 0 && cb.value === knownSeasons[0];
   });
 
+  // Clubs back to none (= all of them), and the typed term with it, or the
+  // list stays narrowed to a search the user has just cleared.
+  document.querySelectorAll('#filter-club input[type="checkbox"]').forEach(function(cb) {
+    cb.checked = false;
+  });
+  var clubSearch = document.getElementById('filter-club-search');
+  if (clubSearch) { clubSearch.value = ''; filterClubOptions(''); }
+  updateDropdownLabel('filter-club');
+
   // Reset dropdown labels
   updateDropdownLabel('filter-age-group');
   updateDropdownLabel('filter-division');
@@ -3608,6 +3686,7 @@ function performSearch() {
   var playingUpOnly = document.getElementById('filter-playing-up').checked;
   var playerNameFilter = (document.getElementById('filter-player-name').value || '').trim().toLowerCase();
   var seasons = Array.from(document.querySelectorAll('#filter-season input:checked')).map(cb => cb.value);
+  var clubIds = Array.from(document.querySelectorAll('#filter-club input:checked')).map(cb => cb.value);
 
   var results = [];
 
@@ -3625,6 +3704,9 @@ function performSearch() {
   clubs.forEach(function(club) {
     // Every season, not just the newest - the season filter decides which
     // of them count, and with nothing ticked the search spans all of them.
+    // Filter by club (if any ticked)
+    if (clubIds.length > 0 && clubIds.indexOf(club.clubId) === -1) return;
+
     var clubPlayers = playersBySeason[club.clubId];
     if (!clubPlayers) return;
 
@@ -3918,6 +4000,7 @@ function shareSearchURL() {
   var minRatio = document.getElementById('filter-min-ratio').value;
   var playingUp = document.getElementById('filter-playing-up').checked;
   var seasons = Array.from(document.querySelectorAll('#filter-season input:checked')).map(cb => cb.value).join(',');
+  var clubIds = Array.from(document.querySelectorAll('#filter-club input:checked')).map(cb => cb.value).join(',');
 
   // Add non-empty parameters
   if (ageGroups) params.set('age', ageGroups);
@@ -3930,6 +4013,7 @@ function shareSearchURL() {
   // silently means "whatever season you open this in" is a different search
   // for whoever receives it.
   if (seasons) params.set('season', seasons);
+  if (clubIds) params.set('club', clubIds);
 
   // Check if any filters are set
   if (params.toString() === '') {
@@ -4004,6 +4088,9 @@ function loadSearchFromURL() {
     // whitelisted by shape, so a new season needs no change here and an
     // unknown one simply ticks nothing.
     applyPendingFilter('filter-season', urlParams.get('season').split(','));
+  }
+  if (urlParams.has('club')) {
+    applyPendingFilter('filter-club', urlParams.get('club').split(','));
   }
 
   // Update dropdown labels
@@ -4594,6 +4681,25 @@ loadSearchFromURL();
               <!-- Filled by populateSeasonFilter() from the seasons actually
                    present in squad_data, newest checked by default. -->
               <div class="dropdown-checkbox-menu" id="filter-season" style="display:none;"></div>
+            </div>
+          </div>
+          <div class="filter-group" style="flex:1;">
+            <label>Club</label>
+            <div class="dropdown-checkbox-wrapper">
+              <button type="button" class="dropdown-checkbox-btn" onclick="toggleDropdown('filter-club')">
+                <span class="dropdown-label">All</span>
+                <span class="dropdown-arrow">▼</span>
+              </button>
+              <!-- Filled by populateClubFilter() from the clubs on the map.
+                   Typing narrows the list; ticking selects. -->
+              <div class="dropdown-checkbox-menu" id="filter-club" style="display:none;">
+                <div class="dropdown-search">
+                  <input type="text" id="filter-club-search" placeholder="Type a club name…"
+                         autocomplete="off" oninput="filterClubOptions(this.value)"
+                         onclick="event.stopPropagation()" />
+                </div>
+                <div id="filter-club-list"></div>
+              </div>
             </div>
           </div>
         </div>
